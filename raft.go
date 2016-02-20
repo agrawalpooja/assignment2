@@ -25,11 +25,12 @@ type alarm struct{
 	sec int
 }
 type AppendEv struct{
-	index int
 	data []byte
 }
 type CommitEv struct{
-
+	index int
+	data []logEntries
+	err int
 }
 type Send struct{
 	peerId int
@@ -73,6 +74,7 @@ type StateMachine struct {
 	state string
 	numVotesGranted, numVotesDenied int
 	votesRcvd [6]int // one per peer
+	noAppendRes int
 	// etc
 }
 
@@ -119,9 +121,15 @@ func (sm *StateMachine) ProcessEvent (ev interface{}) []interface{}{
 		cmd := ev.(AppendEntriesRespEv)
 		if sm.state == "leader"{
 			if cmd.success == true{
+				sm.noAppendRes++
 				//update nextindex and matchindex // how? from id?
 				sm.nextIndex[cmd.from] = sm.lastLogIndex + 1
 				sm.matchIndex[cmd.from] = sm.lastLogIndex
+				sm.majority = 3
+				if sm.noAppendRes >= sm.majority{
+					actions = append(actions, CommitEv{sm.lastLogIndex, sm.log[:sm.lastLogIndex+1], 0})
+					sm.commitIndex = sm.lastLogIndex
+				}
 			}else{
 				// two conditions
 				if sm.term < cmd.term{
@@ -223,8 +231,12 @@ func (sm *StateMachine) ProcessEvent (ev interface{}) []interface{}{
 		if sm.state == "follower"{
 			actions = append(actions, AppendEv{data : cmd.data})  //forward to leader
 		}else if sm.state == "leader"{
-			actions = append(actions, LogStoreEv{index: sm.lastLogIndex+1, entry: logEntries{sm.term, cmd.data}})
-
+			actions = append(actions, LogStoreEv{index: sm.nextIndex[sm.id], entry: logEntries{sm.term, cmd.data}, from: sm.id})
+			for _,i := range sm.peers{
+				actions = append(actions, Send{i, AppendEntriesReqEv{term: sm.term, leaderId: sm.id, prevLogIndex: sm.nextIndex[sm.id]-1, prevLogTerm: sm.log[sm.nextIndex[sm.id]-1].term, entries: []logEntries{{sm.term, cmd.data}}, leaderCommit: sm.commitIndex, from: sm.id}})   //to all
+			}
+			sm.nextIndex[sm.id]++
+			sm.matchIndex[sm.id]++
 		}
 
 	case Send:
